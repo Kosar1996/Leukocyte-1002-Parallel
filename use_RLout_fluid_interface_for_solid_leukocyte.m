@@ -1,0 +1,16 @@
+function tf = use_RLout_fluid_interface_for_solid_leukocyte(par)
+%USE_RLOUT_FLUID_INTERFACE_FOR_SOLID_LEUKOCYTE
+% If true, the fluid inner boundary is fixed at r = par.RLout whenever a
+% leukocyte is present. This includes both rigidLeukocyte = true and a
+% deformable/solid leukocyte case. The old option name is retained for
+% backward compatibility.
+    useFixedCylinder = isfield(par, 'useFixedCylindricalLeukocyte') && ...
+        par.useFixedCylindricalLeukocyte;
+    useNewName = isfield(par, 'useRLoutFluidInterfaceForLeukocyte') && ...
+        par.useRLoutFluidInterfaceForLeukocyte;
+    useOldName = isfield(par, 'useRLoutFluidInterfaceForSolidLeukocyte') && ...
+        par.useRLoutFluidInterfaceForSolidLeukocyte;
+    tf = (useFixedCylinder || useNewName || useOldName) && ...
+        isfield(par, 'RLout') && isfinite(par.RLout) && par.RLout > 0 && ...
+        ~(isfield(par, 'noLeukocyte') && par.noLeukocyte);
+end

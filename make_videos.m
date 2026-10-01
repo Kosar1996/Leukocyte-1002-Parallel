@@ -1,0 +1,1 @@
+generate_heatmap_videos('case_0_b.mat', 'case_7_l', 'videos/', 5);
