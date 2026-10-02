@@ -11,3 +11,12 @@ Originals: `pre_fix_backup_1002/` (solver, traction), `pre_parallelization_backu
 | `run_0930_par.m` | `run_0930.m` + pool block (`NUM_PROCS` workers, own pool folder per Slurm job, client `maxNumCompThreads(2)`) + run options `RESTART_FILE`, `RESTART_STEP`, `FRESH_START=1` |
 
 Run: `NUM_PROCS=8` in the environment, then `run('run_0930_par.m')`. Input `.mat` files are not in the repo.
+
+## Update 10/2: restart state fix (`softlube_run_case_global_coupled.m`, marked `[1002 FIX]`)
+
+A restart now continues exactly like the uninterrupted run, also after a step that needed a dt retry:
+- next dt = min(par.dt, dtGrowFactor * dt of the restart step) after a retried/reduced step (was always par.dt);
+- dtPrev of the fsolve warm start = dt of the restart step (was par.dt);
+- a file written by the fixed code keeps the predictor setting (`useMonoPredictor`) of the run that wrote it; older files (e.g. the step-13 input) keep the original behaviour (predictor on).
+
+Tests (check_fix_1002, OVERALL PASS): restart 13 -> 14 -> 15 bit-identical to 13 -> 15 (parallel N = 8 and serial); with the divergence retry (test code only, not in this repository) 0 -> 1 -> 2 bit-identical to 0 -> 2.

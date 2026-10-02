@@ -600,8 +600,22 @@ elseif nargin >= 2
     end
 
     % Enable predictor extrapolation in solve_monolithic_two_solids_fsolve_timestep
-    par.useMonoPredictor = true;
+    % [1002 FIX] Predictor state of the continuation: (1) dtPrev = dt actually used in the restart step
+    % (the time loop stores stateNew.dtPrev = dt of the step; par.dt here made the fsolve warm start
+    % y0 = u + (dt/dtPrev)(u - uPrev) different after a retried step); (2) a file written by the fixed
+    % code (it contains baseE) keeps the predictor setting of the run that wrote it (a fresh start runs
+    % without the predictor, so a restart from its file must too); older files (e.g. the step-13 input)
+    % keep the original behaviour: predictor on.
+    if isfield(checkpointOut, 'baseE') && isfield(checkpointOut, 'par') && isfield(checkpointOut.par, 'useMonoPredictor')
+        par.useMonoPredictor = checkpointOut.par.useMonoPredictor;
+    else
+        par.useMonoPredictor = true;
+    end
     state.dtPrev = par.dt;
+    if isfield(checkpointOut, 'dtHist') && numel(checkpointOut.dtHist) >= targetStep && isfinite(checkpointOut.dtHist(targetStep))
+        state.dtPrev = checkpointOut.dtHist(targetStep);
+    end
+    fprintf('[1002 FIX] Restart: useMonoPredictor = %d, dtPrev = %.4e s\n', par.useMonoPredictor, state.dtPrev);
 
     % =========================================================================
     % IN-LINE BASELINE VS RESTART PARITY CHECK
@@ -640,6 +654,21 @@ elseif nargin >= 2
     tn = targetStep;
     tNow = state.t;
     dtNext = par.dt;
+    % [1002 FIX] Continue with the time step the uninterrupted run would use next: the time loop sets
+    % dtNext = min(par.dt, par.dtGrowFactor*dt) after a step that needed a retry or a reduced dt, but a
+    % restart always started again from par.dt (e.g. step 15 at 2.5e-6 instead of 1.375e-6 after the
+    % retried step 14), so the continuation differed from the uninterrupted run. Same rule, from the
+    % saved history of the restart step.
+    if isfield(par, 'enableAdaptiveTimeStep') && par.enableAdaptiveTimeStep && ...
+            isfield(checkpointOut, 'dtHist') && numel(checkpointOut.dtHist) >= targetStep && ...
+            isfield(checkpointOut, 'retryHist') && numel(checkpointOut.retryHist) >= targetStep
+        dtPrev1002 = checkpointOut.dtHist(targetStep);
+        if isfinite(dtPrev1002) && (checkpointOut.retryHist(targetStep) > 0 || dtPrev1002 < par.dt)
+            dtNext = min(par.dt, par.dtGrowFactor * dtPrev1002);
+            fprintf('[1002 FIX] Restart: next dt = %.4e s (step %d used dt = %.4e s with %d retries)\n', ...
+                dtNext, targetStep, dtPrev1002, checkpointOut.retryHist(targetStep));
+        end
+    end
     timeTol = 100 * eps(max(par.tEnd, 1));
     stoppedEarly = false;
     stopStep = 0;
