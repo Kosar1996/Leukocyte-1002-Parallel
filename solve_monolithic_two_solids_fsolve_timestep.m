@@ -330,7 +330,8 @@ if exitflag <= 0 && ~(acceptByPhysicalResidual || acceptByScaledResidual)
             RCand = fun(yCandidate);
         end
 
-        if norm(RCand) < normR0
+        % Require significant residual reduction (norm < 0.8 * normR0) to accept line search
+        if norm(RCand) < 0.80 * normR0
             fprintf('   [Line Search] Accepted step size alpha = %.4f (Norm: %.3e -> %.3e)\n', ...
                 alpha_ls, normR0, norm(RCand));
             ySol = yCandidate;
@@ -340,10 +341,14 @@ if exitflag <= 0 && ~(acceptByPhysicalResidual || acceptByScaledResidual)
         alpha_ls = alpha_ls * 0.5;
     end
 
-    if ~ls_success
-        error('Monolithic:fsolveStall', ...
-            'fsolve failed to converge (exitflag = %d, residual = %.3e) and line search made no progress.', ...
-            exitflag, scaledRes);
+    % CHANGE 1 ENFORCEMENT:
+    % Throw an explicit error if line search fails OR if the post-line-search residual remains large (> 1.0e-1).
+    % This triggers the try-catch block in softlube_run_case_global_coupled.m and forces a dt time-step reduction.
+    finalScaledRes = norm(fun(ySol), inf);
+    if ~ls_success || finalScaledRes > 1.0e-1
+        error('Monolithic:fsolveFailed', ...
+            'fsolve failed to converge (exitflag = %d, finalScaledRes = %.3e). Forcing time-step reduction.', ...
+            exitflag, finalScaledRes);
     end
 
     [uESol, uLSol, ~] = unpack_two_solid_y( ...

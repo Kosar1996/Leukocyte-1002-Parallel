@@ -13,9 +13,6 @@
 %    Damps displacement step by 90% (uNew = uOld + 0.10*(bestU - uOld)) when
 %    Newton loop fails to converge, preventing pressure runaway feedback loops.
 % =========================================================================
-% [1005 OPT] (Set 2) The line-search trial residuals (lines 190-200) call
-% apply_interface_traction and assemble_finite_def_axisym with ONE output, so the
-% tangents that were discarded are no longer computed. Results bit-identical.
 
 function uNew = solve_finite_def_solid(mesh, uOld, traction, interfaceNodes, baseNodes, supportType, par, uInitialOrMesh)
 if nargin < 7
@@ -192,12 +189,9 @@ for it = 1:maxIters
 
         try
             FextTrial = zeros(ndof,1);
-            % [1005 OPT] residual-only calls: with one output the traction tangent and the
-            % element tangents are not computed (they were discarded here anyway);
-            % FextTrial and FintTrial are bit-identical to the two-output calls.
-            FextTrial = apply_interface_traction(mesh, uTrial, FextTrial, interfaceNodes, traction);
+            [FextTrial, ~] = apply_interface_traction(mesh, uTrial, FextTrial, interfaceNodes, traction);
             parTrial.uOld = uOld;
-            FintTrial = assemble_finite_def_axisym(mesh, uTrial, parTrial);
+            [FintTrial, ~] = assemble_finite_def_axisym(mesh, uTrial, parTrial);
 
             Rtrial = FintTrial - FextTrial;
             resTrial = norm(Rtrial(free), inf);

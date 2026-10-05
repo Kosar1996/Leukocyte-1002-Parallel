@@ -15,6 +15,12 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
         return;
     end
     % ---- PARALLELIZATION (0930): see header note ----
+    % [1005 OPT] parfor over nB blocks of consecutive elements instead of single
+    % elements (nB = number of workers): every element is computed by the same
+    % subfunction with the same inputs and the serial accumulation below keeps the
+    % original element order and arithmetic, so the result is bit-identical to the
+    % element-wise parfor (Set 1) and to the serial code. Far fewer parfor intervals
+    % (= less client bookkeeping per call).
     useCache = isfield(mesh, 'axisymCache');
     nelem = mesh.nelem;
     if useCache
@@ -23,28 +29,39 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
         cache = [];
     end
 
-    dofsCell = cell(nelem,1);
-    feCell   = cell(nelem,1);
+    [nB, e0] = parfor_blocks_1005(nelem);
+    dofsB = cell(nB,1);
+    feB   = cell(nB,1);
 
-    parfor e = 1:nelem
-        if useCache
-            dofs = cache.dofs(e,:).';
-            fe = kelvin_voigt_element_residual_only_cached( ...
-                cache, e, u(dofs), uOld(dofs), par);
-        else
-            conn = mesh.conn(e,:);
-            Xe   = mesh.nodes(conn,:);
-            dofs = reshape([2*conn-1; 2*conn], [], 1);
-            fe = kelvin_voigt_element_residual_only(Xe, u(dofs), uOld(dofs), mesh, par);
+    parfor b = 1:nB
+        eList = e0(b):(e0(b+1)-1);
+        dL = cell(numel(eList),1); fL = cell(numel(eList),1);
+        for j = 1:numel(eList)
+            e = eList(j);
+                if useCache
+                    dofs = cache.dofs(e,:).';
+                    fe = kelvin_voigt_element_residual_only_cached( ...
+                        cache, e, u(dofs), uOld(dofs), par);
+                else
+                    conn = mesh.conn(e,:);
+                    Xe   = mesh.nodes(conn,:);
+                    dofs = reshape([2*conn-1; 2*conn], [], 1);
+                    fe = kelvin_voigt_element_residual_only(Xe, u(dofs), uOld(dofs), mesh, par);
+                end
+                dL{j} = dofs;
+                fL{j}   = fe;
         end
-        dofsCell{e} = dofs;
-        feCell{e}   = fe;
+        dofsB{b} = dL;
+        feB{b}   = fL;
     end
 
     % Serial accumulation, identical order/arithmetic to the original loop
-    for e = 1:nelem
-        dofs = dofsCell{e};
-        Fvisc(dofs) = Fvisc(dofs) + feCell{e};
+    for b = 1:nB
+        dL = dofsB{b}; fL = feB{b};
+        for j = 1:numel(dL)
+            dofs = dL{j};
+            Fvisc(dofs) = Fvisc(dofs) + fL{j};
+        end
     end
 end
 
@@ -122,4 +139,29 @@ function fe = kelvin_voigt_objective_element_residual_only_cached(cache, e, ue, 
                 (Pvisc(3,1)*dNa_dR + Pvisc(3,3)*dNa_dZ) * Wgp;
         end
     end
+end
+
+function [nB, e0] = parfor_blocks_1005(nelem)
+% [1005 OPT] Element blocks for the parfor loop: nB blocks of consecutive
+% elements (default = number of pool workers; SOFTLUBE_PARFOR_BLOCKS overrides;
+% 1 without a pool). e0(b) = first element of block b, e0(nB+1) = nelem+1.
+persistent nW
+if isempty(nW)
+    nW = 0;
+    try
+        p = gcp('nocreate');
+        if ~isempty(p), nW = p.NumWorkers; end
+    catch
+    end
+end
+env = str2double(getenv('SOFTLUBE_PARFOR_BLOCKS'));
+if isfinite(env) && env >= 1
+    nB = round(env);
+elseif nW > 0
+    nB = nW;
+else
+    nB = 1;
+end
+nB = max(1, min(nB, nelem));
+e0 = round(linspace(1, nelem + 1, nB + 1));
 end

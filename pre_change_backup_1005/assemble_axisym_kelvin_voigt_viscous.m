@@ -6,12 +6,6 @@
 %   tangent factors (etaE/dt) inside element residual-tangent routines against zero dt.
 
 function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
-% PARALLELIZATION (0930): element loop converted to parfor. Each element
-% writes its results to its own cell (parfor-sliced output); a serial loop
-% afterward accumulates them in the SAME element order and with the SAME
-% arithmetic as the original serial loop, so results are bit-identical to
-% the serial code for any number of workers. Element physics (subfunctions
-% below) is unchanged from Leukocyte_Main_Files-0928_v2.
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
@@ -42,77 +36,44 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
         return;
     end
 
-    % ---- PARALLELIZATION (0930): see header note ----
-    % [1005 OPT] parfor over nB blocks of consecutive elements instead of single
-    % elements (nB = number of workers): every element is computed by the same
-    % subfunction with the same inputs and the serial accumulation below keeps the
-    % original element order and arithmetic, so the result is bit-identical to the
-    % element-wise parfor (Set 1) and to the serial code. Far fewer parfor intervals
-    % (= less client bookkeeping per call).
     useCache = isfield(mesh, 'axisymCache');
-    nelem = mesh.nelem;
     if useCache
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
         vK = zeros(size(iK));
     else
-        cache = [];
-        nnzLocal = nelem * 64;
+        nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
         vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    [nB, e0] = parfor_blocks_1005(nelem);
-    dofsB = cell(nB,1);
-    feB   = cell(nB,1);
-    KeB   = cell(nB,1);
-
-    parfor b = 1:nB
-        eList = e0(b):(e0(b+1)-1);
-        dL = cell(numel(eList),1); fL = cell(numel(eList),1); kL = cell(numel(eList),1);
-        for j = 1:numel(eList)
-            e = eList(j);
-                if useCache
-                    dofs = cache.dofs(e,:).';
-                    [fe, Ke] = kelvin_voigt_element_residual_tangent_cached( ...
-                        cache, e, u(dofs), uOld(dofs), par);
-                else
-                    conn = mesh.conn(e,:);
-                    Xe   = mesh.nodes(conn,:);
-                    dofs = reshape([2*conn-1; 2*conn], [], 1);
-                    [fe, Ke] = kelvin_voigt_element_residual_tangent( ...
-                        Xe, u(dofs), uOld(dofs), mesh, par);
-                end
-                dL{j} = dofs;
-                fL{j}   = fe;
-                kL{j}   = Ke;
+    for e = 1:mesh.nelem
+        if useCache
+            dofs = cache.dofs(e,:).';
+            [fe, Ke] = kelvin_voigt_element_residual_tangent_cached( ...
+                cache, e, u(dofs), uOld(dofs), par);
+        else
+            conn = mesh.conn(e,:);
+            Xe   = mesh.nodes(conn,:);
+            dofs = reshape([2*conn-1; 2*conn], [], 1);
+            [fe, Ke] = kelvin_voigt_element_residual_tangent( ...
+                Xe, u(dofs), uOld(dofs), mesh, par);
         end
-        dofsB{b} = dL;
-        feB{b}   = fL;
-        KeB{b}   = kL;
-    end
 
-    % Serial accumulation, identical order/arithmetic to the original loop
-    ptr = 1;
-    for b = 1:nB
-        dL = dofsB{b}; fL = feB{b}; kL = KeB{b};
-        for j = 1:numel(dL)
-            e = e0(b) + j - 1;
-            dofs = dL{j};
-            Fvisc(dofs) = Fvisc(dofs) + fL{j};
-            if useCache
-                loc = (64*(e-1)+1):(64*e);
-            else
-                [ii, jj] = ndgrid(dofs, dofs);
-                loc = ptr:(ptr + 63);
-                iK(loc) = ii(:);
-                jK(loc) = jj(:);
-                ptr = ptr + 64;
-            end
-            vK(loc) = kL{j}(:);
+        Fvisc(dofs) = Fvisc(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
+            [ii, jj] = ndgrid(dofs, dofs);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
+        vK(loc) = Ke(:);
     end
 
     Kvisc = sparse(iK, jK, vK, ndof, ndof);
@@ -230,29 +191,4 @@ function [fe, Ke] = kelvin_voigt_element_residual_tangent_cached(cache, e, ue, u
             end
         end
     end
-end
-
-function [nB, e0] = parfor_blocks_1005(nelem)
-% [1005 OPT] Element blocks for the parfor loop: nB blocks of consecutive
-% elements (default = number of pool workers; SOFTLUBE_PARFOR_BLOCKS overrides;
-% 1 without a pool). e0(b) = first element of block b, e0(nB+1) = nelem+1.
-persistent nW
-if isempty(nW)
-    nW = 0;
-    try
-        p = gcp('nocreate');
-        if ~isempty(p), nW = p.NumWorkers; end
-    catch
-    end
-end
-env = str2double(getenv('SOFTLUBE_PARFOR_BLOCKS'));
-if isfinite(env) && env >= 1
-    nB = round(env);
-elseif nW > 0
-    nB = nW;
-else
-    nB = 1;
-end
-nB = max(1, min(nB, nelem));
-e0 = round(linspace(1, nelem + 1, nB + 1));
 end

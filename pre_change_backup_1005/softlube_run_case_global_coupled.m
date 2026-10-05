@@ -331,48 +331,13 @@ elseif nargin >= 2
     end
 
     % =========================================================================
-    % [1002 FIX] RE-BASE STORED FILE REFERENCES ON THE CURRENT RUN
-    % =========================================================================
-    % par in the checkpoint carries absolute paths of the run that wrote it
-    % (e.g. another user's or an older code folder). Write this run's output
-    % next to its checkpoint in the current run folder, and read the
-    % mesh/prestress files from the current code folder whenever the stored
-    % path is not readable (otherwise baseL stays empty and the restart fails).
-    % A checkpointFile/outputFile given in the runtime cfg still wins (below).
-    [~, cpName1002, cpExt1002] = fileparts(par.checkpointFile);
-    if isempty(cpName1002), cpName1002 = 'case_7_t'; cpExt1002 = '.mat'; end
-    par.checkpointFile = fullfile(pwd, [cpName1002 cpExt1002]);
-    par.outputFile = par.checkpointFile;
-    codeDir1002 = fileparts(mfilename('fullpath'));
-    pf1002 = {'leukocytePrestressFile', 'endotheliumPrestressFile'};
-    for k1002 = 1:numel(pf1002)
-        if isfield(par, pf1002{k1002}) && ~isempty(par.(pf1002{k1002})) && ...
-                ~exist(par.(pf1002{k1002}), 'file')
-            [~, nm1002, ex1002] = fileparts(par.(pf1002{k1002}));
-            par.(pf1002{k1002}) = fullfile(codeDir1002, [nm1002 ex1002]);
-        end
-    end
-    % [1002 FIX] Carry the t = 0 reference state through restarts (was dropped)
-    if isfield(checkpointOut, 't0State'), t0State = checkpointOut.t0State; end
-    if isfield(checkpointOut, 't0Fluid'), t0Fluid = checkpointOut.t0Fluid; end
-
-    % =========================================================================
     % OVERRIDE LOADED PAR WITH RUNTIME CFG & PAROVERRIDES (RESTART FIX)
     % =========================================================================
     % 1. Apply parOverrides saved in checkpoint first
-    % [1002 FIX] A finished run's .mat also contains out.cfg (added by the run
-    % file). Its parOverrides are the run file's settings, not necessarily the
-    % values the run used (out.par), and its file paths point to the old run
-    % folder. Only fill in fields missing from par; never override the values
-    % the run used and never take file locations from it. (The runtime cfg
-    % passed to this call is still applied in full in step 2 below.)
     if isfield(checkpointOut, 'cfg') && isfield(checkpointOut.cfg, 'parOverrides')
-        skip1002 = {'checkpointFile', 'outputFile', 'saveOutput', 'checkpointEvery'};
         fnames = fieldnames(checkpointOut.cfg.parOverrides);
         for k = 1:numel(fnames)
-            if ~ismember(fnames{k}, skip1002) && ~isfield(par, fnames{k})
-                par.(fnames{k}) = checkpointOut.cfg.parOverrides.(fnames{k});
-            end
+            par.(fnames{k}) = checkpointOut.cfg.parOverrides.(fnames{k});
         end
     end
 
@@ -600,22 +565,8 @@ elseif nargin >= 2
     end
 
     % Enable predictor extrapolation in solve_monolithic_two_solids_fsolve_timestep
-    % [1002 FIX] Predictor state of the continuation: (1) dtPrev = dt actually used in the restart step
-    % (the time loop stores stateNew.dtPrev = dt of the step; par.dt here made the fsolve warm start
-    % y0 = u + (dt/dtPrev)(u - uPrev) different after a retried step); (2) a file written by the fixed
-    % code (it contains baseE) keeps the predictor setting of the run that wrote it (a fresh start runs
-    % without the predictor, so a restart from its file must too); older files (e.g. the step-13 input)
-    % keep the original behaviour: predictor on.
-    if isfield(checkpointOut, 'baseE') && isfield(checkpointOut, 'par') && isfield(checkpointOut.par, 'useMonoPredictor')
-        par.useMonoPredictor = checkpointOut.par.useMonoPredictor;
-    else
-        par.useMonoPredictor = true;
-    end
+    par.useMonoPredictor = true;
     state.dtPrev = par.dt;
-    if isfield(checkpointOut, 'dtHist') && numel(checkpointOut.dtHist) >= targetStep && isfinite(checkpointOut.dtHist(targetStep))
-        state.dtPrev = checkpointOut.dtHist(targetStep);
-    end
-    fprintf('[1002 FIX] Restart: useMonoPredictor = %d, dtPrev = %.4e s\n', par.useMonoPredictor, state.dtPrev);
 
     % =========================================================================
     % IN-LINE BASELINE VS RESTART PARITY CHECK
@@ -654,21 +605,6 @@ elseif nargin >= 2
     tn = targetStep;
     tNow = state.t;
     dtNext = par.dt;
-    % [1002 FIX] Continue with the time step the uninterrupted run would use next: the time loop sets
-    % dtNext = min(par.dt, par.dtGrowFactor*dt) after a step that needed a retry or a reduced dt, but a
-    % restart always started again from par.dt (e.g. step 15 at 2.5e-6 instead of 1.375e-6 after the
-    % retried step 14), so the continuation differed from the uninterrupted run. Same rule, from the
-    % saved history of the restart step.
-    if isfield(par, 'enableAdaptiveTimeStep') && par.enableAdaptiveTimeStep && ...
-            isfield(checkpointOut, 'dtHist') && numel(checkpointOut.dtHist) >= targetStep && ...
-            isfield(checkpointOut, 'retryHist') && numel(checkpointOut.retryHist) >= targetStep
-        dtPrev1002 = checkpointOut.dtHist(targetStep);
-        if isfinite(dtPrev1002) && (checkpointOut.retryHist(targetStep) > 0 || dtPrev1002 < par.dt)
-            dtNext = min(par.dt, par.dtGrowFactor * dtPrev1002);
-            fprintf('[1002 FIX] Restart: next dt = %.4e s (step %d used dt = %.4e s with %d retries)\n', ...
-                dtNext, targetStep, dtPrev1002, checkpointOut.retryHist(targetStep));
-        end
-    end
     timeTol = 100 * eps(max(par.tEnd, 1));
     stoppedEarly = false;
     stopStep = 0;
@@ -1759,8 +1695,6 @@ while tNow < par.tEnd - timeTol
             out.diagHist = diagHist(1:tn);
             out.tractionCorrectionHistory = tractionCorrectionHistory(1:tn);
             out.par = par;
-            out.baseE = baseE;                                   % [1002 FIX]
-            if exist('baseL','var') && ~isempty(baseL), out.baseL = baseL; end  % [1002 FIX]
             out.meshE = meshE;
             out.interfaceE = interfaceE;
             if exist('meshL','var') && ~isempty(meshL)
@@ -1809,16 +1743,6 @@ while tNow < par.tEnd - timeTol
         dtNext = min(par.dt, par.dtGrowFactor * dtAttempt);
     else
         dtNext = par.dt;
-    end
-
-    % [1002] Optional short runs: stop after a given step WITHOUT changing
-    % par.tEnd (SOFTLUBE_NSTEPS shortens tEnd, which makes the last step use
-    % dt = tEnd - t and stores the short tEnd in the .mat file).
-    % Only active when SOFTLUBE_STOP_AFTER_STEP is set.
-    stopAfter1002 = str2double(getenv('SOFTLUBE_STOP_AFTER_STEP'));
-    if isfinite(stopAfter1002) && tn >= stopAfter1002
-        fprintf('[STOP AFTER STEP] Stopping after step %d (SOFTLUBE_STOP_AFTER_STEP).\n', tn);
-        break;
     end
 end
 
@@ -1904,8 +1828,6 @@ out.trLHist = trLHist;
 out.diagHist = diagHist;
 out.tractionCorrectionHistory = tractionCorrectionHistory;
 out.par = par;
-out.baseE = baseE;                                   % [1002 FIX]
-if exist('baseL','var') && ~isempty(baseL), out.baseL = baseL; end  % [1002 FIX]
 out.meshE = meshE;
 out.interfaceE = interfaceE;
 if exist('meshL','var') && ~isempty(meshL)

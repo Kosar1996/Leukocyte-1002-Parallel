@@ -1,100 +1,50 @@
 function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
-% PARALLELIZATION (0929 package): element loop converted to parfor. Each element
-% writes its results to its own cell (parfor-sliced output); a serial loop
-% afterward accumulates them in the SAME element order and with the SAME
-% arithmetic as the original serial loop, so results are bit-identical to
-% the serial code for any number of workers. Element physics (subfunctions
-% below) is unchanged from Leukocyte_Main_Files-0929.
-% [1005 OPT] Called with ONE output (Fint only, e.g. the line-search trial in
-% solve_finite_def_solid), the element tangent Ke is not computed and K is not
-% assembled (K = []). fe is computed by the same lines as before (the tangent
-% block comes after it and does not change fe), so Fint is bit-identical.
-% [1005 OPT] parfor over nB blocks of consecutive elements instead of single
-% elements (nB = number of workers): every element is computed by the same
-% subfunction with the same inputs and the serial accumulation below keeps the
-% original element order and arithmetic, so the result is bit-identical to the
-% element-wise parfor (Set 1) and to the serial code. Far fewer parfor intervals
-% (= less client bookkeeping per call).
 
-    wantK = nargout > 1;
-    ndof = size(mesh.nodes,1)*2;
-    Fint = zeros(ndof,1);
-    useCache = isfield(mesh, 'axisymCache');
-    nelem = mesh.nelem;
-    if useCache
-        cache = mesh.axisymCache;
-        iK = cache.iK;
-        jK = cache.jK;
-        vK = zeros(size(iK));
-    else
-        cache = [];
-        nnzLocal = nelem * 64;
-        iK = zeros(nnzLocal,1);
-        jK = zeros(nnzLocal,1);
-        vK = zeros(nnzLocal,1);
-    end
-
-    [nB, e0] = parfor_blocks_1005(nelem);
-    dofsB = cell(nB,1);
-    feB   = cell(nB,1);
-    KeB   = cell(nB,1);
-
-    parfor b = 1:nB
-        eList = e0(b):(e0(b+1)-1);
-        dL = cell(numel(eList),1); fL = cell(numel(eList),1); kL = cell(numel(eList),1);
-        for j = 1:numel(eList)
-            e = eList(j);
-            if useCache
-                dofs = cache.dofs(e,:).';
-                [fe, Ke] = finite_def_element_residual_tangent_cached( ...
-                    cache, e, u(dofs), par, wantK);
-            else
-                conn = mesh.conn(e,:);
-                Xe   = mesh.nodes(conn,:);
-                dofs = reshape([2*conn-1; 2*conn], [], 1);
-                [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par, dofs, wantK);
-            end
-            dL{j} = dofs;
-            fL{j} = fe;
-            kL{j} = Ke;
-        end
-        dofsB{b} = dL;
-        feB{b}   = fL;
-        KeB{b}   = kL;
-    end
-
-    % Serial accumulation, identical order/arithmetic to the original loop
+ndof = size(mesh.nodes,1)*2;
+Fint = zeros(ndof,1);
+useCache = isfield(mesh, 'axisymCache');
+if useCache
+    cache = mesh.axisymCache;
+    iK = cache.iK;
+    jK = cache.jK;
+    vK = zeros(size(iK));
+else
+    nnzLocal = mesh.nelem * 64;
+    iK = zeros(nnzLocal,1);
+    jK = zeros(nnzLocal,1);
+    vK = zeros(nnzLocal,1);
     ptr = 1;
-    for b = 1:nB
-        dL = dofsB{b}; fL = feB{b}; kL = KeB{b};
-        for j = 1:numel(dL)
-            e = e0(b) + j - 1;
-            dofs = dL{j};
-            Fint(dofs) = Fint(dofs) + fL{j};
-            if wantK
-                if useCache
-                    loc = (64*(e-1)+1):(64*e);
-                else
-                    [ii, jj] = ndgrid(dofs, dofs);
-                    loc = ptr:(ptr + 63);
-                    iK(loc) = ii(:);
-                    jK(loc) = jj(:);
-                    ptr = ptr + 64;
-                end
-                vK(loc) = kL{j}(:);
-            end
-        end
-    end
-
-    if wantK
-        K = sparse(iK, jK, vK, ndof, ndof);
-    else
-        K = [];
-    end
 end
 
-function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par, wantK)
-if nargin < 5, wantK = true; end  % [1005 OPT]
+for e = 1:mesh.nelem
+    if useCache
+        dofs = cache.dofs(e,:).';
+        [fe, Ke] = finite_def_element_residual_tangent_cached( ...
+            cache, e, u(dofs), par);
+    else
+        conn = mesh.conn(e,:);
+        Xe   = mesh.nodes(conn,:);
+        dofs = reshape([2*conn-1; 2*conn], [], 1);
+        [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par, dofs);
+    end
+
+    Fint(dofs) = Fint(dofs) + fe;
+    if useCache
+        loc = (64*(e-1)+1):(64*e);
+    else
+        [ii, jj] = ndgrid(dofs, dofs);
+        loc = ptr:(ptr + 63);
+        iK(loc) = ii(:);
+        jK(loc) = jj(:);
+        ptr = ptr + 64;
+    end
+    vK(loc) = Ke(:);
+end
+
+K = sparse(iK, jK, vK, ndof, ndof);
+end
+
+function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par)
 fe = zeros(8,1);
 Ke = zeros(8,8);
 
@@ -223,51 +173,48 @@ for g = 1:cache.ngp
             ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
     end
 
-    if wantK  % [1005 OPT] tangent only when K is requested
-        for alpha = 1:8
-            dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
+    for alpha = 1:8
+        dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
 
-            % Tangent Trace Fix: In-lined scalar product
-            trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
-                dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
+        % Tangent Trace Fix: In-lined scalar product
+        trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
+            dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
 
-            dJ = J * trFinv_dF;
-            dB = dF * F.' + F * dF.';
-            trdB = dB(1,1) + dB(2,2) + dB(3,3);
-            dDevB = dB - (trdB/3)*I3;
+        dJ = J * trFinv_dF;
+        dB = dF * F.' + F * dF.';
+        trdB = dB(1,1) + dB(2,2) + dB(3,3);
+        dDevB = dB - (trdB/3)*I3;
 
-            % Derivative of J^(-2/3)
-            daIso = -(2/3) * aIso * trFinv_dF;
+        % Derivative of J^(-2/3)
+        daIso = -(2/3) * aIso * trFinv_dF;
 
-            dT = par.Ge * ( daIso * devB + aIso * dDevB ) ...
-                + par.Ke * dJ * I3;
-            dFinvT = -FinvT * dF.' * FinvT;
-            dP = dJ * T * FinvT + J * dT * FinvT + J * T * dFinvT;
+        dT = par.Ge * ( daIso * devB + aIso * dDevB ) ...
+            + par.Ke * dJ * I3;
+        dFinvT = -FinvT * dF.' * FinvT;
+        dP = dJ * T * FinvT + J * dT * FinvT + J * T * dFinvT;
 
-            for a = 1:4
-                dNa_dR = dNdX(a,1);
-                dNa_dZ = dNdX(a,2);
-                Na     = N(a);
+        for a = 1:4
+            dNa_dR = dNdX(a,1);
+            dNa_dZ = dNdX(a,2);
+            Na     = N(a);
 
-                if Rg < 1e-10
-                    Na_over_Rg = dNa_dR;
-                else
-                    Na_over_Rg = Na / Rg_eff;
-                end
-
-                Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
-                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
-
-                Ke(2*a, alpha) = Ke(2*a, alpha) + ...
-                    ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;
+            if Rg < 1e-10
+                Na_over_Rg = dNa_dR;
+            else
+                Na_over_Rg = Na / Rg_eff;
             end
+
+            Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
+                ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
+
+            Ke(2*a, alpha) = Ke(2*a, alpha) + ...
+                ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;
         end
     end
 end
 end
 
-function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par, dofs, wantK)
-if nargin < 6, wantK = true; end  % [1005 OPT]
+function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par, dofs)
 
 fe = zeros(8,1);
 Ke = zeros(8,8);
@@ -385,70 +332,43 @@ for g = 1:mesh.ngp
             ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
     end
 
-    if wantK  % [1005 OPT] tangent only when K is requested
-        for alpha = 1:8
-            dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
+    for alpha = 1:8
+        dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
 
-            trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
-                dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
+        trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
+            dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
 
-            dJ = J * trFinv_dF;
+        dJ = J * trFinv_dF;
 
-            dB = dF * F.' + F * dF.';
-            trdB = dB(1,1) + dB(2,2) + dB(3,3);
-            dDevB = dB - (trdB/3)*I3;
+        dB = dF * F.' + F * dF.';
+        trdB = dB(1,1) + dB(2,2) + dB(3,3);
+        dDevB = dB - (trdB/3)*I3;
 
-            daIso = -(2/3) * aIso * trFinv_dF;
+        daIso = -(2/3) * aIso * trFinv_dF;
 
-            dT = par.Ge * ( daIso * devB + aIso * dDevB ) ...
-                + par.Ke * dJ * I3;
+        dT = par.Ge * ( daIso * devB + aIso * dDevB ) ...
+            + par.Ke * dJ * I3;
 
-            dFinvT = -FinvT * dF.' * FinvT;
-            dP = dJ * T * FinvT + J * dT * FinvT + J * T * dFinvT;
+        dFinvT = -FinvT * dF.' * FinvT;
+        dP = dJ * T * FinvT + J * dT * FinvT + J * T * dFinvT;
 
-            for a = 1:4
-                dNa_dR = dNdX(a,1);
-                dNa_dZ = dNdX(a,2);
-                Na     = N(a);
+        for a = 1:4
+            dNa_dR = dNdX(a,1);
+            dNa_dZ = dNdX(a,2);
+            Na     = N(a);
 
-                if Rg < 1e-10
-                    Na_over_Rg = dNa_dR;
-                else
-                    Na_over_Rg = Na / Rg_eff;
-                end
-
-                Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
-                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
-
-                Ke(2*a, alpha) = Ke(2*a, alpha) + ...
-                    ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;
+            if Rg < 1e-10
+                Na_over_Rg = dNa_dR;
+            else
+                Na_over_Rg = Na / Rg_eff;
             end
+
+            Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
+                ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
+
+            Ke(2*a, alpha) = Ke(2*a, alpha) + ...
+                ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;
         end
     end
 end
-end
-
-function [nB, e0] = parfor_blocks_1005(nelem)
-% [1005 OPT] Element blocks for the parfor loop: nB blocks of consecutive
-% elements (default = number of pool workers; SOFTLUBE_PARFOR_BLOCKS overrides;
-% 1 without a pool). e0(b) = first element of block b, e0(nB+1) = nelem+1.
-persistent nW
-if isempty(nW)
-    nW = 0;
-    try
-        p = gcp('nocreate');
-        if ~isempty(p), nW = p.NumWorkers; end
-    catch
-    end
-end
-env = str2double(getenv('SOFTLUBE_PARFOR_BLOCKS'));
-if isfinite(env) && env >= 1
-    nB = round(env);
-elseif nW > 0
-    nB = nW;
-else
-    nB = 1;
-end
-nB = max(1, min(nB, nelem));
-e0 = round(linspace(1, nelem + 1, nB + 1));
 end
