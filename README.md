@@ -1,3 +1,37 @@
+# Leukocyte TEM solver: PARALLEL, WITH active force
+
+**This repository = parallel code (parfor element assembly) with the active (translocation) force.** Current version: 1005; output bit-identical to the serial code for every number of workers.
+
+## Repository map (4 repositories, each with its full git history)
+
+| | without active force | with active force |
+|---|---|---|
+| **serial** | [Leukocyte_Main_Files](https://github.com/Kosar1996/Leukocyte_Main_Files) | [Leukocyte-1002-Serial](https://github.com/Kosar1996/Leukocyte-1002-Serial) |
+| **parallel** (parfor element assembly) | [Parallelized-Version](https://github.com/Kosar1996/Parallelized-Version) | [Leukocyte-1002-Parallel](https://github.com/Kosar1996/Leukocyte-1002-Parallel) |
+
+Every version is a commit in the repository's history (Commits / `git log`); to go back to one:
+`git checkout <commit>` (look) or `git revert` / `git reset --hard <commit>` (restore).
+
+**Inputs (not in the repositories):** `case_7_t_step14.mat`, `solid_endothelium_P300.mat`, `solid_leukocyte_P300.mat`
+from the 0929 / 1001_v1 packages, in the same folder as the code. All runs restart from step 13 of `case_7_t_step14.mat`.
+Run options (environment variables, optional): `SOFTLUBE_STOP_AFTER_STEP=<n>`, `RESTART_FILE`, `RESTART_STEP`,
+`FRESH_START=1` (parallel run files), `NUM_PROCS=<workers>` (parallel run files).
+
+
+## Run
+`run_0930_par.m` with `NUM_PROCS=<workers>` (restart from step 13).
+
+## Versions (commit history, newest first)
+| commit | version |
+|---|---|
+| `1005: v1 active-force code ...` | the v1 active-force code (frozen activation factor in the Jacobian, line search) + restart fix + Set 2 speed-up; output identical to the v1 reference log (checked 10/5, 10/6) |
+| `1002: restart state fix ...` | + restart state fix (next dt, dtPrev, predictor setting) |
+| first uploads (Add files via upload) | 1002: active force, the 1001 package code (+ parallel assembly in the parallel repository) |
+
+---
+
+# Earlier notes (kept unchanged below; the run instructions above are the current ones)
+
 # Leukocyte-Endothelium Transendothelial Migration Solver
 
 Axisymmetric MAC finite-volume Stokes fluid solver, coupled to solid mechanics for a leukocyte and an endothelium, via a monolithic
