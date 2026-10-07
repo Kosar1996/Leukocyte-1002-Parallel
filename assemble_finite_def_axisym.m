@@ -16,6 +16,19 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
 % element-wise parfor (Set 1) and to the serial code. Far fewer parfor intervals
 % (= less client bookkeeping per call).
 
+    % [1008 SET5] Batched line-search trials: called as
+    %   [FintC, okC] = assemble_finite_def_axisym(mesh, U, Pc)
+    % with U = ndof x nT trial displacements and Pc = nT x 1 cell of par structs,
+    % it returns FintC{k} = Fint of trial k (ONE-output result) and okC(k) = false
+    % if the element routine raised an error for trial k (as the single call would).
+    % All nT trials run in ONE parfor (nT x nB element blocks). Each Fint is computed
+    % by the same element routine with the same inputs and accumulated in the same
+    % element order, so it is bit-identical to assemble_finite_def_axisym(mesh, U(:,k), Pc{k}).
+    if iscell(par)
+        [Fint, K] = assemble_trials_1008(mesh, u, par);
+        return;
+    end
+
     wantK = nargout > 1;
     ndof = size(mesh.nodes,1)*2;
     Fint = zeros(ndof,1);
@@ -451,4 +464,68 @@ else
 end
 nB = max(1, min(nB, nelem));
 e0 = round(linspace(1, nelem + 1, nB + 1));
+end
+
+function [FintC, okC] = assemble_trials_1008(mesh, U, Pc)
+% [1008 SET5] see the header of assemble_finite_def_axisym. Without the element
+% cache it falls back to one ordinary call per trial (same results).
+nT = size(U, 2);
+FintC = cell(nT, 1);
+okC = false(nT, 1);
+if ~isfield(mesh, 'axisymCache')
+    for k = 1:nT
+        try
+            FintC{k} = assemble_finite_def_axisym(mesh, U(:,k), Pc{k});
+            okC(k) = true;
+        catch
+        end
+    end
+    return;
+end
+ndof = size(mesh.nodes,1)*2;
+cache = mesh.axisymCache;
+nelem = mesh.nelem;
+[nB, e0] = parfor_blocks_1005(nelem);
+nTask = nT * nB;
+feT = cell(nTask, 1);
+okT = true(nTask, 1);
+parfor t = 1:nTask
+    k = floor((t - 1) / nB) + 1;
+    b = t - (k - 1) * nB;
+    eList = e0(b):(e0(b+1)-1);
+    fL = cell(numel(eList), 1);
+    okb = true;
+    uk = U(:, k);
+    pk = Pc{k};
+    try
+        for j = 1:numel(eList)
+            e = eList(j);
+            dofs = cache.dofs(e,:).';
+            [fe, Ke] = finite_def_element_residual_tangent_cached( ...
+                cache, e, uk(dofs), pk, false); %#ok<ASGLU>
+            fL{j} = fe;
+        end
+    catch
+        okb = false;
+    end
+    feT{t} = fL;
+    okT(t) = okb;
+end
+% Serial accumulation per trial, identical order/arithmetic to the one-output call
+for k = 1:nT
+    if ~all(okT((k-1)*nB + (1:nB)))
+        continue;
+    end
+    Fint = zeros(ndof, 1);
+    for b = 1:nB
+        fL = feT{(k-1)*nB + b};
+        for j = 1:numel(fL)
+            e = e0(b) + j - 1;
+            dofs = cache.dofs(e,:).';
+            Fint(dofs) = Fint(dofs) + fL{j};
+        end
+    end
+    FintC{k} = Fint;
+    okC(k) = true;
+end
 end
