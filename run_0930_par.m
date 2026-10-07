@@ -38,9 +38,17 @@ if numProcs >= 1 && isempty(gcp('nocreate'))
     jsl = fullfile(tempdir, ['matlab_jobs_' getenv('SLURM_JOB_ID')]);
     if ~exist(jsl, 'dir'), mkdir(jsl); end
     pc.JobStorageLocation = jsl;
-    parpool(pc, numProcs);
+    % [1007 OPT] POOL_TYPE=threads: thread-based pool (workers share the client's memory, so the
+    % element cache and the other broadcast data are not copied to every worker at every parfor call).
+    % Default (POOL_TYPE unset): process-based pool exactly as before (Set 2).
+    if strcmpi(getenv('POOL_TYPE'), 'threads')
+        parpool('Threads', numProcs);
+    else
+        parpool(pc, numProcs);
+    end
 end
-fprintf('\n=== PARALLEL VERSION: NUM_PROCS=%d, client maxNumCompThreads=%d ===\n', numProcs, maxNumCompThreads);
+poolNow = gcp('nocreate'); poolKind = 'none'; if ~isempty(poolNow), poolKind = class(poolNow); end
+fprintf('\n=== PARALLEL VERSION: NUM_PROCS=%d, client maxNumCompThreads=%d, pool = %s ===\n', numProcs, maxNumCompThreads, poolKind);
 % =================================================================
 
 fprintf('\n=== MATLAB Function Lookup Diagnostics ===\n');
@@ -105,6 +113,14 @@ useActiveTranslocation = true;
 fz_active_translocation = -1.0e9; % Active force density [N/m^3]
 z_pore_bottom = 3.5e-6;          % z-coordinate of bottom exit [m]
 sigma_head_decay = 0.5e-6;  
+% [1007 TEST SWITCHES] optional overrides from the Slurm script (unset = the values above):
+%   SOFTLUBE_ACTIVE_FORCE=0/1 (useActiveTranslocation), SOFTLUBE_F0=<N/m^3> (active force density),
+%   SOFTLUBE_ZBOT=<m> (z_pore_bottom)
+if ~isempty(getenv('SOFTLUBE_ACTIVE_FORCE')), useActiveTranslocation = logical(str2double(getenv('SOFTLUBE_ACTIVE_FORCE'))); end
+if ~isempty(getenv('SOFTLUBE_F0')), fz_active_translocation = str2double(getenv('SOFTLUBE_F0')); end
+if ~isempty(getenv('SOFTLUBE_ZBOT')), z_pore_bottom = str2double(getenv('SOFTLUBE_ZBOT')); end
+fprintf('[1007 SWITCHES] useActiveTranslocation = %d, fz_active_translocation = %.3e N/m^3, z_pore_bottom = %.3e m\n', ...
+    useActiveTranslocation, fz_active_translocation, z_pore_bottom);
 leukocyteEtaL = 1;
 
 
