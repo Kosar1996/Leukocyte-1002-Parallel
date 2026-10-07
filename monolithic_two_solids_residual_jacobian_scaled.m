@@ -190,12 +190,26 @@ if isfield(parL, 'useActiveTranslocation') && parL.useActiveTranslocation
         u_z_old = u_z;
     end
     zL_deformed_old = z_nodes + u_z_old;
+    if f0>=0
     z_head_frozen    = max(zL_deformed_old);
+    else 
+        z_head_frozen    = min(zL_deformed_old);
+    end
     
     ramp_length = 0.1e-6;                             % [m] Transition length scale (100 nm)
-    pore_depth  = z_bot - z_head_frozen;             % Positive once head penetrates past z_bot
+    if f0>=0
+    pore_depth  = -(z_bot - z_head_frozen);             % Positive once head penetrates past z_bot
+    else
+        pore_depth  = z_bot - z_head_frozen;             % Positive once head penetrates past z_bot
+    end
     act_factor  = 0.5 * (1 + tanh(pore_depth / ramp_length));
-    
+
+    % [1008 OPT] Set 4: the tangent entries are collected as triplets and assembled with one
+    % sparse() call after the loop, instead of 16 indexed updates of the sparse matrix per element.
+    % Same per-element values, same order, same force-vector assembly (bit-identical, unit test).
+    nTrip1008 = size(meshL.conn, 1) * size(meshL.conn, 2)^2;
+    Ki1008 = zeros(nTrip1008, 1); Kj1008 = zeros(nTrip1008, 1); Kv1008 = zeros(nTrip1008, 1); p1008 = 0;
+
     for e = 1:size(meshL.conn, 1)
         elem_nodes = meshL.conn(e, :);
         n_elem     = numel(elem_nodes);
@@ -235,13 +249,16 @@ if isfield(parL, 'useActiveTranslocation') && parL.useActiveTranslocation
             for k2 = 1:n_elem
                 node_j = elem_nodes(k2);
                 z_dof_j = 2 * node_j;
-                K_active_global(z_dof_i, z_dof_j) = ...
-                    K_active_global(z_dof_i, z_dof_j) + dfe_du_z;
+                p1008 = p1008 + 1;                         % [1008 OPT]
+                Ki1008(p1008) = z_dof_i; Kj1008(p1008) = z_dof_j; Kv1008(p1008) = dfe_du_z;
             end
         end
     end
+    K_active_global = sparse(Ki1008(1:p1008), Kj1008(1:p1008), Kv1008(1:p1008), ndofL, ndofL);   % [1008 OPT]
+
 end
 
+        
 % Subtract active force from leukocyte residual
 RLfull = FintL - FextL - f_active_global;
 RL     = RLfull(freeL);
