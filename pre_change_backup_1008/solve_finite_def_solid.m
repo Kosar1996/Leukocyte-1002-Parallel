@@ -13,9 +13,6 @@
 %    Damps displacement step by 90% (uNew = uOld + 0.10*(bestU - uOld)) when
 %    Newton loop fails to converge, preventing pressure runaway feedback loops.
 % =========================================================================
-% [1008 SET5] Line search: the residuals of consecutive trials are assembled in ONE
-% parallel call (assemble_finite_def_axisym with a cell of par), then checked in the
-% original order with the original test; results bit-identical (SOFTLUBE_LS_BATCH).
 % [1005 OPT] (Set 2) The line-search trial residuals (lines 190-200) call
 % apply_interface_traction and assemble_finite_def_axisym with ONE output, so the
 % tangents that were discarded are no longer computed. Results bit-identical.
@@ -185,84 +182,33 @@ for it = 1:maxIters
 
     alpha = 1.0; accepted = false;
 
-    nLS1008 = min(par.lineSearchMax, 10);
-    bat1008 = ls_batch_1008(mesh);
-    if bat1008 > 1
-        % [1008 SET5] The same trials as the loop below (alpha = 1, 1/2, 1/4, ...),
-        % but the residual assembly of up to bat1008 consecutive trials is done in ONE
-        % parallel call; the trials are then checked one by one in the original order
-        % with the original acceptance test, so the accepted step (and everything
-        % after it) is bit-identical. Trials after the accepted one are computed but
-        % not used. ls_batch_1008 = 1 (or SOFTLUBE_LS_BATCH=1) gives the original loop.
-        ls = 0;
-        while ls < nLS1008 && ~accepted
-            nb1008 = min(bat1008, nLS1008 - ls);
-            Utr = zeros(ndof, nb1008); Ptr = cell(nb1008, 1);
-            aTr = alpha;
-            for q = 1:nb1008
-                uTrial = u;
-                uTrial(free) = uTrial(free) + aTr * stepScale * du_free;
-                uTrial(fixDofs) = fixVals;
-                parTrial = par;
-                parTrial.alpha_ls = aTr * stepScale;
-                parTrial.uOld = uOld;
-                Utr(:, q) = uTrial; Ptr{q} = parTrial;
-                aTr = 0.5 * aTr;
-            end
-            [FintTr, okTr] = assemble_finite_def_axisym(mesh, Utr, Ptr);
-            for q = 1:nb1008
-                ls = ls + 1;
-                uTrial = Utr(:, q);
-                try
-                    FextTrial = zeros(ndof,1);
-                    FextTrial = apply_interface_traction(mesh, uTrial, FextTrial, interfaceNodes, traction);
-                    if ~okTr(q)
-                        error('solid:trialAssembly1008', 'trial assembly failed');
-                    end
-                    FintTrial = FintTr{q};
+    for ls = 1:min(par.lineSearchMax, 10)
+        uTrial = u;
+        uTrial(free) = uTrial(free) + alpha * stepScale * du_free;
+        uTrial(fixDofs) = fixVals;
 
-                    Rtrial = FintTrial - FextTrial;
-                    resTrial = norm(Rtrial(free), inf);
+        parTrial = par;
+        parTrial.alpha_ls = alpha * stepScale;
 
-                    if resTrial < resNorm || resTrial < fallbackAbsTol
-                        u = uTrial; accepted = true; break;
-                    end
-                catch
-                    % Step caused invalid element, shrink step size
-                end
-                alpha = 0.5 * alpha;
+        try
+            FextTrial = zeros(ndof,1);
+            % [1005 OPT] residual-only calls: with one output the traction tangent and the
+            % element tangents are not computed (they were discarded here anyway);
+            % FextTrial and FintTrial are bit-identical to the two-output calls.
+            FextTrial = apply_interface_traction(mesh, uTrial, FextTrial, interfaceNodes, traction);
+            parTrial.uOld = uOld;
+            FintTrial = assemble_finite_def_axisym(mesh, uTrial, parTrial);
+
+            Rtrial = FintTrial - FextTrial;
+            resTrial = norm(Rtrial(free), inf);
+
+            if resTrial < resNorm || resTrial < fallbackAbsTol
+                u = uTrial; accepted = true; break;
             end
+        catch
+            % Step caused invalid element, shrink step size
         end
-    else
-
-        for ls = 1:min(par.lineSearchMax, 10)
-            uTrial = u;
-            uTrial(free) = uTrial(free) + alpha * stepScale * du_free;
-            uTrial(fixDofs) = fixVals;
-
-            parTrial = par;
-            parTrial.alpha_ls = alpha * stepScale;
-
-            try
-                FextTrial = zeros(ndof,1);
-                % [1005 OPT] residual-only calls: with one output the traction tangent and the
-                % element tangents are not computed (they were discarded here anyway);
-                % FextTrial and FintTrial are bit-identical to the two-output calls.
-                FextTrial = apply_interface_traction(mesh, uTrial, FextTrial, interfaceNodes, traction);
-                parTrial.uOld = uOld;
-                FintTrial = assemble_finite_def_axisym(mesh, uTrial, parTrial);
-
-                Rtrial = FintTrial - FextTrial;
-                resTrial = norm(Rtrial(free), inf);
-
-                if resTrial < resNorm || resTrial < fallbackAbsTol
-                    u = uTrial; accepted = true; break;
-                end
-            catch
-                % Step caused invalid element, shrink step size
-            end
-            alpha = 0.5 * alpha;
-        end
+        alpha = 0.5 * alpha;
     end
 
     if ~accepted
@@ -323,21 +269,4 @@ if isfield(par, 'dt') && par.dt > 0
     end
 end
 % =========================================================================
-end
-
-function nb = ls_batch_1008(mesh)
-% [1008 SET5] Trials per parallel line-search call: SOFTLUBE_LS_BATCH if set,
-% otherwise 10 with a parallel pool and the element cache, 1 (original loop) otherwise.
-nb = 1;
-env = str2double(getenv('SOFTLUBE_LS_BATCH'));
-if isfinite(env) && env >= 1
-    nb = round(env);
-    return;
-end
-if ~isfield(mesh, 'axisymCache'), return; end
-try
-    p = gcp('nocreate');
-    if ~isempty(p), nb = 10; end
-catch
-end
 end
