@@ -873,6 +873,11 @@ end
 % =========================================================================
 
 
+% [1009] Active-force ramp: it starts at the start time of THIS run, i.e. t = 0 for a fresh start
+% (nargin == 1) and the time of the restart step for a restart (nargin >= 2; e.g. step 13 -> 3.25e-5 s).
+tRampStart1009 = tNow;
+fprintf('[1009 RAMP] Active-force ramp starts at t = %.6e s (step %d; %s)\n', tRampStart1009, tn, ternary_1009(nargin >= 2, 'restart', 'fresh start'));
+
 % Main Time-Stepping Loop
 while tNow < par.tEnd - timeTol
     old = state;
@@ -1016,7 +1021,27 @@ while tNow < par.tEnd - timeTol
                 if isfield(pSrc, 'useActiveTranslocation') && pSrc.useActiveTranslocation
                     parL.useActiveTranslocation = true;
                     if isfield(pSrc, 'fz_active_translocation')
-                        parL.fz_active_translocation = pSrc.fz_active_translocation;
+% Activation time and ramp parameters
+                        t_start = tRampStart1009; % [s] [1009] start time of this run (was 3.25e-5 = step 13)
+                        t_ramp  = 0.30e-5; % [s] 10 us smooth ramp
+
+                        % Current physical step time
+                        t_current = tNew;
+
+                        % Evaluate smooth S-curve ramp factor [0.0 to 1.0]
+                        if t_current < t_start
+                            act_factor = 0.0;
+                        else
+                            tau = min(1.0, (t_current - t_start) / t_ramp);
+                            act_factor = 0.5 * (1.0 - cos(pi * tau)); % Raised cosine S-curve
+                        end
+
+                        % Pass scaled effective force down to solid solver
+                        parL.fz_active_translocation = pSrc.fz_active_translocation*act_factor;
+                        if couplingIter == 1 % [1009] log the ramp factor (print only)
+                            fprintf('[1009 RAMP] step %d, t = %.6e s: ramp factor = %.6f, f0_eff = %.4e N/m^3\n', tn + 1, t_current, act_factor, parL.fz_active_translocation);
+                        end
+
                     end
                     if isfield(pSrc, 'z_pore_bottom')
                         parL.z_pore_bottom = pSrc.z_pore_bottom;
@@ -1811,15 +1836,6 @@ while tNow < par.tEnd - timeTol
         dtNext = par.dt;
     end
 
-    % [1002] Optional short runs: stop after a given step WITHOUT changing
-    % par.tEnd (SOFTLUBE_NSTEPS shortens tEnd, which makes the last step use
-    % dt = tEnd - t and stores the short tEnd in the .mat file).
-    % Only active when SOFTLUBE_STOP_AFTER_STEP is set.
-    stopAfter1002 = str2double(getenv('SOFTLUBE_STOP_AFTER_STEP'));
-    if isfinite(stopAfter1002) && tn >= stopAfter1002
-        fprintf('[STOP AFTER STEP] Stopping after step %d (SOFTLUBE_STOP_AFTER_STEP).\n', tn);
-        break;
-    end
 end
 
 if ~stoppedEarly
@@ -2374,6 +2390,7 @@ else
 end
 end
 
-
-
-
+function s = ternary_1009(c, a, b)
+% [1009] helper for the ramp log line
+if c, s = a; else, s = b; end
+end

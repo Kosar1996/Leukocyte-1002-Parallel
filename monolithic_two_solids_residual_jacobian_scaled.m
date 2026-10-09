@@ -78,7 +78,7 @@ function [RE, RL, RF, JEE, JEL, JEp, JLE, JLL, JLp, JFE, JFL, JFp] = ...
 % Mandatory synchronization override
 if isstruct(par) && isfield(par, 'useActiveTranslocation') && par.useActiveTranslocation
     parL.useActiveTranslocation  = true;
-    if isfield(par, 'fz_active_translocation')
+    if ~isfield(parL, 'fz_active_translocation')&&isfield(par, 'fz_active_translocation')
         parL.fz_active_translocation = par.fz_active_translocation;
     end
     if isfield(par, 'z_pore_bottom')
